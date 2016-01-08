@@ -1,4 +1,5 @@
 #!/bin/bash
+source database.conf
 Date=`date +%Y%m%d%H%M%S`
 BackupPath="/media/sf_Mineria"
 
@@ -13,7 +14,7 @@ VerifyIncomingParams(){
 		then
 			mkdir $project
 		fi
-		return=`mysql -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME=\"$project\""|grep $project|wc -l`
+		return=`mysql -h $host -u $usr -P $port -p$pass -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME=\"$project\""|grep $project|wc -l`
 		if [ "$return" == "0" ]
 		then
 			echo ERROR: Unable to find $project database to operate with. Generate it? \[y/n\]
@@ -27,7 +28,9 @@ CREATE DATABASE IF NOT EXISTS DummyName DEFAULT CHARACTER SET latin1 COLLATE lat
 USE DummyName;
 CREATE TABLE GoogleInfo (
 IdUnic int(11) NOT NULL,
-  GoogleKey tinytext COLLATE latin1_spanish_ci NOT NULL
+  GoogleKey tinytext COLLATE latin1_spanish_ci NOT NULL,
+  SearchWord tinytext COLLATE latin1_spanish_ci NOT NULL,
+  SearchMethod tinytext COLLATE latin1_spanish_ci NOT NULL
 ) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=latin1 COLLATE=latin1_spanish_ci;
 CREATE TABLE Positions (
 IdUnic int(11) NOT NULL,
@@ -73,7 +76,7 @@ InteractiveMenu(){
 	echo "[1]Download kmz searching by word in googlemaps"
 	echo "[z]Download kmz & kml searching by word in google"
 	echo "	[1a]Delete downloads with 0 coords"
-	echo "	[1b]Get the list of allready searched words"
+	echo "	[1b]Get the list of already searched words"
 	echo "	[1c]Redownload all searched words"
 	echo "[2]Generate MySql insert code"
 	echo "	[2a]Get some statistics about it"
@@ -185,11 +188,11 @@ DownloadByWordGoogleMaps(){
 			names_count_temp=`echo $[$names_count_temp+1]`
 			if [[ -d $unicid || -d ../data-done/$unicid ]]
 			then
-				echo \[$names_count_temp\/$urls_count] $unicid allready downloaded
+				echo \[$names_count_temp\/$urls_count] $unicid already downloaded
 			else
 				mkdir $unicid
 				cd $unicid
-				touch $search_word.search
+				echo GoogleMapSearch > $search_word.search
 				echo \[$names_count_temp\/$urls_count] Downloading $unicid gallery ...
 				curl --connect-timeout 5 --max-time 20 -s -# -L -A "Mozilla/5.0 (Windows; U; Windows NT 5.1; de; rv:1.9.2.3) Gecko/20100401 Firefox/3.6.3" -o down.kmz "https://www.google.com/maps/d/kml?mid=$unicid"
 				if [ ! -f down.kmz ]
@@ -238,7 +241,7 @@ DownloadByWordGoogle(){
 		while [ "$results" -ne "0" ]
 		do
 			echo Downloading kmz page for search \"$search_word\" start = $start ...
-			echo "https://www.google.es/search?q=$search_word+filetype:kmz#q=urbex+filetype:kmz&start=$start"
+			echo "https://www.google.es/search?q=$search_word+filetype:kmz&start=$start"
 			curl --connect-timeout 5 --max-time 20 -s -# -L -A "Mozilla/5.0 (Windows; U; Windows NT 5.1; de; rv:1.9.2.3) Gecko/20100401 Firefox/3.6.3" -o zz_page.html "https://www.google.es/search?q=$search_word+filetype:kmz&start=$start"
 			#Verify we downloaded somethig
 			if [ ! -f zz_page.html ]
@@ -257,11 +260,11 @@ DownloadByWordGoogle(){
 					names_count_temp=`echo $[$names_count_temp+1]`
 					if [[ -d $unicid || -d ../data-done/$unicid ]]
 					then
-						echo \[$names_count_temp\/$urls_count] $unicid allready downloaded
+						echo \[$names_count_temp\/$urls_count] $unicid already downloaded
 					else
 						mkdir $unicid
 						cd $unicid
-						echo DownloadByWordGoogle $start > $search_word.search
+						echo GoogleKmlFileSearch $start > $search_word.search
 						echo \[$names_count_temp\/$urls_count] Downloading $unicid gallery ...
 						curl --connect-timeout 5 --max-time 20 -s -# -L -A "Mozilla/5.0 (Windows; U; Windows NT 5.1; de; rv:1.9.2.3) Gecko/20100401 Firefox/3.6.3" -o down.kmz $line
 						if [ ! -f down.kmz ]
@@ -276,7 +279,7 @@ DownloadByWordGoogle(){
 					fi
 				done
 				rm -f DownloadByWordGoogle.list
-				if [ "$urls_count" -ne "10" ]
+				if [ "$urls_count" -lt "10" ]
 				then
 					echo ERROR: google search for $search_word dint return 10.
 					results=0
@@ -318,7 +321,7 @@ Delete0CoordsDirs(){
 				else
 					echo \[$folders_count_temp\/$names_count] OK $GoogleKey
 				fi
-				#rm -f zz_coords.list
+				rm -f zz_coords.list
 				if [ -d images ]
 				then
 					rm -rf images
@@ -390,20 +393,22 @@ MySqlGenerate(){
 			cd $GoogleKey
 			if [[ -f mysql.code || -f mysql.inserted.gz ]]
 			then
-				echo $GoogleKey allready has its mysql code \[$folders_count_temp\/$names_count]
+				echo $GoogleKey already has its mysql code \[$folders_count_temp\/$names_count]
 			else
 				if [ ! -f down.kmz ]
 				then
 					echo \[$folders_count_temp\/$names_count] ERROR: $GoogleKey Unable to find down.kmz file in directory|tee -a ../../MySqlGenerate.log
 				else
 					#Getting coords from doc.kml and storing in zz_coords.list
+					SearchWord=`ls|grep .search|cut -f1 -d"."`
+					SearchMethod=`cat $SearchWord.search`
 					exec 2<&-
 					zcat down.kmz|grep '<coordinates>'|cut -f2 -d">"|cut -f1 -d"<"|tr " " "\n">zz_coords.list
 					coords_num=`cat zz_coords.list|wc -l`
 					if [ "$coords_num" -ne "0" ]
 					then
 						echo \[$folders_count_temp\/$names_count] Generating $GoogleKey mysql code with $coords_num inserts
-						echo INSERT INTO GoogleInfo \(IdUnic, GoogleKey\) VALUES \(NULL, \"$GoogleKey\"\)\; > mysql.code
+						echo INSERT INTO GoogleInfo \(IdUnic, GoogleKey, SearchMethod, SearchWord\) VALUES \(NULL, \"$GoogleKey\"\, \"$SearchMethod\", \"$SearchWord\"\)\; > mysql.code
 						echo INSERT INTO Positions \(GoogleKeyIdUnic,Location\) VALUES >> mysql.code
 						coord_count=0;
 						for coord in `cat zz_coords.list` 
@@ -534,13 +539,13 @@ MySqlInsert(){
 	do
 		mysql_count_temp=`echo $[$mysql_count_temp+1]`
 		GoogleKey=`echo $file|cut -f2 -d"/"`
-		return=`mysql -h 127.0.0.1 -u root -e "SELECT idunic FROM GoogleInfo WHERE GoogleKey = \"$GoogleKey\"" $project|head -4|tail -1|tr -s " "|cut -f2 -d" "`
+		return=`mysql -h $host -u $usr -P $port -p$pass -e "SELECT idunic FROM GoogleInfo WHERE GoogleKey = \"$GoogleKey\"" $project|head -4|tail -1|tr -s " "|cut -f2 -d" "`
 		if [ "$return" != "" ]
 		then
-			echo \[$mysql_count_temp/$mysql_count\] ERROR: $GoogleKey is allready in the database|tee -a ../MySqlInsert.log
+			echo \[$mysql_count_temp/$mysql_count\] ERROR: $GoogleKey is already in the database|tee -a ../MySqlInsert.log
 		else
 			echo \[$mysql_count_temp/$mysql_count\] Inserting $GoogleKey ...
-			mysql -h 127.0.0.1 -u root $project < $file
+			mysql $project < $file
 			if [ "$?" -eq "0" ]
 			then
 				mv $file $GoogleKey/mysql.inserted
@@ -567,7 +572,7 @@ VerifyMysqlInsertDown(){
 		mysql_count_temp=`echo $[$mysql_count_temp+1]`
 		GoogleKey=`echo $file|cut -f2 -d"/"`
 		printf .
-		value1=`mysql -h 127.0.0.1 -u root -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=(SELECT idunic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\")" $project|head -4|tail -1|tr -s " "|cut -f2 -d" "`
+		value1=`mysql -h $host -u $usr -P $port -p$pass -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=(SELECT idunic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\")" $project|head -4|tail -1|tr -s " "|cut -f2 -d" "`
 		if [ "$value1" != "" ]
 		then
 			printf .
@@ -625,7 +630,7 @@ DataDoneInfoVerify(){
 	do
 		mysql_count_temp=`echo $[$mysql_count_temp+1]`
 		GoogleKey=`echo $file|cut -f2 -d"/"`
-		value1=`mysql -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=(SELECT idunic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\")" $project|grep [0-9]`
+		value1=`mysql -h $host -u $usr -P $port -p$pass -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=(SELECT idunic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\")" $project|grep [0-9]`
 		if [ "$value1" != "" ]
 		then
 			value2=`zcat $GoogleKey/mysql.inserted.gz|grep "POINT"|grep -v 'POINT(0 0)'|wc -l`
@@ -663,12 +668,12 @@ clear
 		then
 			value1=0
 			echo \#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#
-			echo mysql -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project
-			echo `mysql -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project|grep [0-9]`
-			for IdUnic in `mysql -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project|grep [0-9]`
+			echo mysql -h $host -u $usr -P $port -p$pass -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project
+			echo `mysql -h $host -u $usr -P $port -p$pass -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project|grep [0-9]`
+			for IdUnic in `mysql -h $host -u $usr -P $port -p$pass -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project|grep [0-9]`
 			do
-				echo mysql -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=\"$IdUnic\"" $project
-				value1=$(($value1+`mysql -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=\"$IdUnic\"" $project|grep [0-9]`))
+				echo mysql -h $host -u $usr -P $port -p$pass -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=\"$IdUnic\"" $project
+				value1=$(($value1+`mysql -h $host -u $usr -P $port -p$pass -e "SELECT COUNT(*) FROM Positions WHERE GoogleKeyIdUnic=\"$IdUnic\"" $project|grep [0-9]`))
 			done
 			exec 2<&-
 			value2=`zcat $GoogleKey/down.kmz|grep '<coordinates>'|cut -f2 -d">"|cut -f1 -d"<"|tr " " "\n"|wc -l`
@@ -689,7 +694,7 @@ DeleteMysqlGoogleKey(){
 	then
 		rm -f zz_purge.sql
 	fi
-	for IdUnic in `mysql -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project|grep [0-9]`
+	for IdUnic in `mysql -h $host -u $usr -P $port -p$pass -e "SELECT IdUnic FROM GoogleInfo WHERE GoogleKey=\"$GoogleKey\"" $project|grep [0-9]`
 	do
 		echo DELETE FROM Positions WHERE GoogleKeyIdUnic=$IdUnic\;>>zz_purge.sql
 		echo DELETE FROM GoogleInfo WHERE IdUnic=$IdUnic\;>>zz_purge.sql
